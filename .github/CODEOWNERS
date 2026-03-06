@@ -1,0 +1,8 @@
+# デフォルト: すべてのファイルはice1203がレビュー必須
+/* @ice1203
+
+# プロダクト別レビュー権限（個別パスで上書き）
+/imgs/product-a/ @gh-test-1733
+/imgs/product-b/ @gh-test-1733
+/imgs/product-c/ @testuser452
+/imgs/web-service/ @gh-test-1733
