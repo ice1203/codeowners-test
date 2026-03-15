@@ -8,7 +8,7 @@
 # プロダクト別レビュー権限（個別パスで上書き）
 # ボットが自動承認できるよう、各パスに <app-name>[bot] を共同オーナーとして追加
 # 例: /imgs/product-a/ @gh-test-1733 @container-review-bot-test[bot]
-/imgs/product-a/ @gh-test-1733
-/imgs/product-b/ @gh-test-1733
-/imgs/product-c/ @testuser452
-/imgs/web-service/ @gh-test-1733
+/imgs/product-a/ @gh-test-1733 @container-review-bot-test[bot]
+/imgs/product-b/ @gh-test-1733 @container-review-bot-test[bot]
+/imgs/product-c/ @testuser452 @container-review-bot-test[bot]
+/imgs/web-service/ @gh-test-1733 @container-review-bot-test[bot]
