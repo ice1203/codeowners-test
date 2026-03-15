@@ -1,0 +1,256 @@
+name: Auto Approve by CODEOWNERS
+
+# フェーズ1-4の検証ワークフロー
+# - フェーズ1: GitHub App トークン生成確認
+# - フェーズ2: PR自動承認確認
+# - フェーズ3: CODEOWNERS判定確認
+# - フェーズ4: ブランチプロテクション統合確認
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  auto-approve:
+    name: Auto Approve (Code Owner)
+    runs-on: ubuntu-latest
+
+    steps:
+      # ========================================================================
+      # Step 1: Generate GitHub App Token (フェーズ1)
+      # ========================================================================
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      # ========================================================================
+      # Step 2: Detect changed files under imgs/
+      # ========================================================================
+      # dorny/paths-filterを使用してPR内の追加・変更ファイルを検出
+      # pull_requestイベントではbaseブランチとの差分を自動検出
+      # ========================================================================
+      - name: Get changed files
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            imgs:
+              - added|modified|deleted: 'imgs/**'
+          list-files: shell
+
+      # ========================================================================
+      # Step 2.7: Detect changes outside imgs/ (safety check)
+      # ========================================================================
+      # imgs/ 配下以外の変更が含まれている場合は自動承認しない
+      # ========================================================================
+      - name: Get non-imgs changes
+        uses: dorny/paths-filter@v3
+        id: outside_changes
+        with:
+          filters: |
+            outside:
+              - '**'
+              - '!imgs/**'
+
+      # ========================================================================
+      # Step 3: Checkout base branch
+      # ========================================================================
+      # ベースブランチをチェックアウトすることでPR作成者によるCODEOWNERS改ざんを防止
+      # PR作成者がCODEOWNERSを書き換えて権限昇格できないよう防止
+      # ========================================================================
+      - name: Checkout base branch
+        if: steps.changes.outputs.imgs == 'true' && steps.outside_changes.outputs.outside == 'false'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      # ========================================================================
+      # Step 4: Check Code Owner and auto-approve if eligible (フェーズ2-3)
+      # ========================================================================
+      # 厳密マッチング設計:
+      #   - * を含むパターン（/* 等）は除外（明示的なパス指定のみ対象）
+      #   - CODEOWNERSにマッチするルールが存在しない場合は承認しない
+      #   - 1ファイルでもPR作成者がオーナーでない場合は承認しない
+      # ========================================================================
+      - name: Check Code Owner and auto-approve if eligible
+        if: steps.changes.outputs.imgs == 'true' && steps.outside_changes.outputs.outside == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            // ================================================================
+            // 関数定義
+            // ================================================================
+
+            // ----------------------------------------------------------------
+            // CODEOWNERSのパース
+            // フォーマット: <pattern> <owner1> [<owner2> ...]
+            // コメント行（#）と空行はスキップ
+            //
+            // 変換例:
+            //   入力 (.github/CODEOWNERS):
+            //     /* @ice1203
+            //     /imgs/product-a/ @gh-test-1733
+            //     /imgs/product-b/ @gh-test-1733
+            //     /imgs/product-c/ @testuser452
+            //
+            //   出力 (rules配列):
+            //     [
+            //       { pattern: '/*',               owners: ['ice1203'] },
+            //       { pattern: '/imgs/product-a/', owners: ['gh-test-1733'] },
+            //       { pattern: '/imgs/product-b/', owners: ['gh-test-1733'] },
+            //       { pattern: '/imgs/product-c/', owners: ['testuser452'] }
+            //     ]
+            // ----------------------------------------------------------------
+            function parseCodeowners(content) {
+              const rules = [];
+              for (const line of content.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) continue;
+                const parts = trimmed.split(/\s+/);
+                if (parts.length >= 2) {
+                  const pattern = parts[0];
+                  const owners = parts.slice(1).map(o => o.replace('@', '').toLowerCase());
+                  rules.push({ pattern, owners });
+                }
+              }
+              return rules;
+            }
+
+            // ----------------------------------------------------------------
+            // globパターンを正規表現に変換し、パスとマッチするか判定する
+            // * → [^/]*（スラッシュを越えない任意文字列）に変換
+            // 引数: pattern - CODEOWNERSのパターン（先頭 / 除去済み）
+            //       path    - dorny/paths-filter で検出した変更ファイルパスの1つ（先頭 / 除去済み）
+            // 戻り値: マッチすれば true、しなければ false
+            // ----------------------------------------------------------------
+            function globMatch(pattern, path) {
+              let regexStr = '';
+              for (const char of pattern) {
+                if (char === '*') {
+                  regexStr += '[^/]*';
+                } else if ('.+^${}()|[]\\?'.includes(char)) {
+                  regexStr += '\\' + char;
+                } else {
+                  regexStr += char;
+                }
+              }
+              if (pattern.endsWith('/')) {
+                regexStr += '.*';
+              } else {
+                regexStr += '(/.*)?';
+              }
+              return new RegExp('^' + regexStr + '$').test(path);
+            }
+
+            // ----------------------------------------------------------------
+            // 指定ファイルパスに対するCODEOWNERSのオーナーリストを返す
+            // rules配列を上から順に評価し、最後にマッチしたルールのオーナーを返す
+            // マッチするルールがない場合は空配列を返す（フォールバックなし）
+            //
+            // 対応パターン (parse-codeowners.sh と同一仕様):
+            //   - ディレクトリパターン（末尾 /）、* ワイルドカード、完全一致、サブパス前方一致
+            // 非対応:
+            //   - グローバルワイルドカード (* のみ = /*): 除外（意図しない自動承認を防止）
+            //   - ** ディープマッチ、? 1文字ワイルドカード、拡張子パターン、否定パターン
+            //
+            // 引数: rules    - parseCodeowners() の戻り値
+            //       filePath - dorny/paths-filter で検出した変更ファイルパスの1つ
+            // 戻り値: オーナーのログイン名配列（例: ['gh-test-1733']）、なければ []
+            // ----------------------------------------------------------------
+            function getOwners(rules, filePath) {
+              const normalizedPath = filePath.startsWith('/') ? filePath.slice(1) : filePath;
+              let matched = [];
+              for (const rule of rules) {
+                const normalizedPattern = rule.pattern.startsWith('/') ? rule.pattern.slice(1) : rule.pattern;
+                if (normalizedPattern === '*') continue;  // グローバルワイルドカードは除外
+                if (globMatch(normalizedPattern, normalizedPath)) {
+                  matched = rule.owners;
+                }
+              }
+              return matched;
+            }
+
+            // ================================================================
+            // メイン処理
+            // ================================================================
+            const prAuthor = context.payload.pull_request.user.login;
+            const prNumber = context.payload.pull_request.number;
+
+            console.log('=== Code Owner 自動承認チェック ===');
+            console.log(`PR #${prNumber} author: ${prAuthor}`);
+
+            // 変更ファイルリストを取得（dorny/paths-filter の出力）
+            const changedFilesRaw = '${{ steps.changes.outputs.imgs_files }}';
+            const changedFiles = changedFilesRaw.trim().split(/\s+/).filter(f => f);
+            console.log(`変更ファイル: ${changedFiles.join(', ')}`);
+
+            // CODEOWNERSをベースブランチから読み込む（チェックアウト済み）
+            const fs = require('fs');
+            let codeownersContent;
+            try {
+              codeownersContent = fs.readFileSync('.github/CODEOWNERS', 'utf8');
+              console.log('CODEOWNERSをベースブランチから読み込みました');
+            } catch (error) {
+              console.log(`警告: CODEOWNERSファイルの読み込みに失敗しました: ${error.message}`);
+              console.log('自動承認をスキップします');
+              return;
+            }
+
+            const rules = parseCodeowners(codeownersContent);
+            const authorLower = prAuthor.toLowerCase();
+            let shouldApprove = true;
+
+            console.log('--------------------------------------------------');
+            // 変更ファイルを1つずつチェック。1つでもNGなら即終了（承認しない）
+            for (const filePath of changedFiles) {
+              const owners = getOwners(rules, filePath);
+
+              if (owners.length === 0) {
+                console.log(`  [SKIP] ${filePath}`);
+                console.log(`         CODEOWNERSにマッチするルールなし → 承認しない`);
+                shouldApprove = false;
+                break;
+              }
+
+              const isOwner = owners.includes(authorLower);
+              const status = isOwner ? 'OK' : 'SKIP';
+              console.log(`  [${status}]   ${filePath}`);
+              console.log(`         owners=${owners.join(', ')}, is_owner=${isOwner}`);
+
+              if (!isOwner) {
+                shouldApprove = false;
+              }
+            }
+
+            console.log('--------------------------------------------------');
+
+            if (!shouldApprove || changedFiles.length === 0) {
+              console.log('ℹ️ 自動承認条件を満たしていません。手動レビューが必要です。');
+              console.log(`  PR作成者: ${prAuthor}`);
+              return;
+            }
+
+            console.log(`✅ PR作成者はすべての変更ファイルのCode Ownerです。PR #${prNumber} を自動承認します`);
+
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              event: 'APPROVE',
+              body: 'このPRの変更対象ディレクトリのCode Ownerが作成したPRのため、自動的に承認します。'
+            });
+
+            console.log(`✅ PR #${prNumber} の自動承認が完了しました`);
+
+      - name: Skip (no imgs changes)
+        if: steps.changes.outputs.imgs == 'false'
+        run: |
+          echo "ℹ️ imgs/ 配下の変更なし。自動承認をスキップします。"
