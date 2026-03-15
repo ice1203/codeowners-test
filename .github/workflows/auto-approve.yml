@@ -178,6 +178,15 @@ jobs:
             const changedFiles = changedFilesRaw.trim().split(/\s+/).filter(f => f);
             console.log(`変更ファイル: ${changedFiles.join(', ')}`);
 
+            // imgs/ 配下以外の変更が含まれていないか確認
+            // PRの全変更ファイル数とimgs/の変更ファイル数が一致しない場合はスキップ
+            const totalChangedFiles = context.payload.pull_request.changed_files;
+            if (totalChangedFiles !== changedFiles.length) {
+              console.log(`imgs/ 配下以外の変更が含まれています。自動マージをスキップします`);
+              console.log(`  PR全体: ${totalChangedFiles}ファイル, imgs/配下: ${changedFiles.length}ファイル`);
+              return;
+            }
+
             // CODEOWNERSをベースブランチから読み込む（チェックアウト済み）
             const fs = require('fs');
             let codeownersContent;
