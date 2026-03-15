@@ -42,7 +42,7 @@ jobs:
         with:
           filters: |
             imgs:
-              - added|modified|deleted: 'imgs/**'
+              - added|modified: 'imgs/**'
           list-files: shell
 
       # ========================================================================
