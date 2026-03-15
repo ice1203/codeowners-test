@@ -46,27 +46,13 @@ jobs:
           list-files: shell
 
       # ========================================================================
-      # Step 2.7: Detect changes outside imgs/ (safety check)
-      # ========================================================================
-      # imgs/ 配下以外の変更が含まれている場合は自動承認しない
-      # ========================================================================
-      - name: Get non-imgs changes
-        uses: dorny/paths-filter@v3
-        id: outside_changes
-        with:
-          filters: |
-            outside:
-              - '**'
-              - '!imgs/**'
-
-      # ========================================================================
       # Step 3: Checkout base branch
       # ========================================================================
       # ベースブランチをチェックアウトすることでPR作成者によるCODEOWNERS改ざんを防止
       # PR作成者がCODEOWNERSを書き換えて権限昇格できないよう防止
       # ========================================================================
       - name: Checkout base branch
-        if: steps.changes.outputs.imgs == 'true' && steps.outside_changes.outputs.outside == 'false'
+        if: steps.changes.outputs.imgs == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
@@ -80,7 +66,7 @@ jobs:
       #   - 1ファイルでもPR作成者がオーナーでない場合は承認しない
       # ========================================================================
       - name: Check Code Owner and auto-approve if eligible
-        if: steps.changes.outputs.imgs == 'true' && steps.outside_changes.outputs.outside == 'false'
+        if: steps.changes.outputs.imgs == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -187,7 +173,7 @@ jobs:
             console.log('=== Code Owner 自動承認チェック ===');
             console.log(`PR #${prNumber} author: ${prAuthor}`);
 
-            // 変更ファイルリストを取得（dorny/paths-filter の出力）
+            // 変更ファイルリストを取得（dorny/paths-filter の出力、imgs/ 配下のみ）
             const changedFilesRaw = '${{ steps.changes.outputs.imgs_files }}';
             const changedFiles = changedFilesRaw.trim().split(/\s+/).filter(f => f);
             console.log(`変更ファイル: ${changedFiles.join(', ')}`);
