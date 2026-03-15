@@ -15,3 +15,4 @@ directories with different owners are changed in a single PR.
 | `imgs/product-b/` | @gh-test-1733 |
 | `imgs/product-c/` | @testuser452 |
 | `imgs/web-service/` | @gh-test-1733 |
+test case 5
