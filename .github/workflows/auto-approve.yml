@@ -236,6 +236,16 @@ jobs:
 
             console.log(`✅ PR #${prNumber} の自動承認が完了しました`);
 
+            // PR をマージ
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: 'squash'
+            });
+
+            console.log(`✅ PR #${prNumber} のマージが完了しました`);
+
       - name: Skip (no imgs changes)
         if: steps.changes.outputs.imgs == 'false'
         run: |
